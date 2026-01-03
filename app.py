@@ -8,19 +8,23 @@ import re
 from datetime import datetime
 
 # ==========================================
-# 🔐 1. 账号管理配置 (在这里管理你的用户)
+# 🔐 1. 账号管理配置
 # ==========================================
-# 格式： "用户名": "密码"
 USERS = {
-    "admin": "admin888",  # 管理员账号
-    "guest": "123456",    # 给朋友的账号
-    "vip": "vip666"       # 另一个账号
+    "admin": "admin888",
+    "guest": "123456",
+    "vip": "vip666"
 }
 
 # ==========================================
 # 🔧 2. 系统配置
 # ==========================================
-API_KEY = st.secrets.get("API_KEY", "sk-hr1jWTbl00qsSrKY6mGf6H8GTTV5Zh0jkzjYb2z7igv9CRcg") 
+# 尝试从 secrets 读取，如果没有则使用默认值（方便本地测试）
+try:
+    API_KEY = st.secrets.get("API_KEY", "sk-hr1jWTbl00qsSrKY6mGf6H8GTTV5Zh0jkzjYb2z7igv9CRcg")
+except FileNotFoundError:
+    API_KEY = "sk-hr1jWTbl00qsSrKY6mGf6H8GTTV5Zh0jkzjYb2z7igv9CRcg"
+
 BASE_URL = "https://xinyuanai666.com"
 VIDEO_CREATE_URL = f"{BASE_URL}/v1/video/create"
 VIDEO_QUERY_URL = f"{BASE_URL}/v1/video/query" 
@@ -35,7 +39,6 @@ def check_login(username, password):
     return USERS.get(username) == password
 
 def log_action(action, details):
-    # 简单的日志记录，打印到后台控制台
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] User: {st.session_state.get('username', 'Unknown')} | Action: {action} | {details}")
 
@@ -127,7 +130,52 @@ def extract_copy_blocks(text):
 # ==========================================
 # 🖥️ 页面主逻辑
 # ==========================================
-st.set_page_config(page_title="AI 工作台", layout="wide", page_icon="✨")
+st.set_page_config(page_title="AI 工作台", layout="wide", page_icon="✨", initial_sidebar_state="auto")
+
+# --- 📱 移动端适配 CSS ---
+st.markdown("""
+<style>
+    /* 全局字体优化 */
+    html, body, [class*="css"] {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    
+    /* 视频卡片样式 */
+    .video-card { 
+        background-color: #f8f9fa; 
+        border-radius: 12px; 
+        padding: 16px; 
+        margin-bottom: 12px; 
+        border: 1px solid #eee; 
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    /* 按钮样式优化 */
+    .stButton button { 
+        border-radius: 8px; 
+        font-weight: 500;
+        transition: all 0.2s;
+    }
+
+    /* 移动端特定适配 (iPhone 等竖屏设备) */
+    @media only screen and (max-width: 768px) {
+        /* 调整侧边栏标题大小 */
+        [data-testid="stSidebar"] h1 { font-size: 1.2rem !important; }
+        
+        /* 视频卡片在手机上更紧凑 */
+        .video-card { padding: 12px; }
+        
+        /* 强制按钮在手机上全宽，方便点击 */
+        .stButton button { width: 100%; margin-top: 4px; }
+        
+        /* 调整文字大小，避免太小看不清 */
+        .stMarkdown p { font-size: 1rem !important; line-height: 1.5 !important; }
+        
+        /* 隐藏不必要的空白 */
+        .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- 登录界面 ---
 if 'logged_in' not in st.session_state:
@@ -135,34 +183,21 @@ if 'logged_in' not in st.session_state:
 
 if not st.session_state['logged_in']:
     st.markdown("## 🔒 请登录 AI 工作台")
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        username = st.text_input("用户名")
-        password = st.text_input("密码", type="password")
-        if st.button("登录", type="primary"):
-            if check_login(username, password):
-                st.session_state['logged_in'] = True
-                st.session_state['username'] = username
-                log_action("LOGIN", "Success")
-                st.rerun()
-            else:
-                st.error("用户名或密码错误")
-                log_action("LOGIN", f"Failed attempt: {username}")
-    st.stop() # 停止执行后续代码，直到登录成功
+    # 手机端登录框全宽显示
+    username = st.text_input("用户名")
+    password = st.text_input("密码", type="password")
+    if st.button("登录", type="primary", use_container_width=True):
+        if check_login(username, password):
+            st.session_state['logged_in'] = True
+            st.session_state['username'] = username
+            log_action("LOGIN", "Success")
+            st.rerun()
+        else:
+            st.error("用户名或密码错误")
+            log_action("LOGIN", f"Failed attempt: {username}")
+    st.stop()
 
-# --- 登录成功后的界面 ---
-st.markdown("""
-<style>
-    .stChatMessage p { font-size: 0.9rem !important; line-height: 1.6 !important; }
-    [data-testid="stSidebar"] h1 { font-size: 1.5rem !important; padding-top: 0rem; }
-    .video-card { background-color: #f8f9fa; border-radius: 10px; padding: 15px; margin-bottom: 10px; border: 1px solid #eee; }
-    footer {visibility: hidden;}
-    .stTextArea textarea { font-size: 0.9rem; }
-    .stButton button { border-radius: 6px; }
-</style>
-""", unsafe_allow_html=True)
-
-# 初始化 Session State
+# --- 初始化 Session State ---
 if 'video_tasks' not in st.session_state: st.session_state['video_tasks'] = []
 if 'chat_sessions' not in st.session_state:
     default_id = str(uuid.uuid4())
@@ -187,7 +222,7 @@ current_session = st.session_state['chat_sessions'][current_sess_id]
 # --- 侧边栏 ---
 with st.sidebar:
     st.title(f"✨ 欢迎, {st.session_state['username']}")
-    if st.button("退出登录"):
+    if st.button("退出登录", use_container_width=True):
         st.session_state['logged_in'] = False
         st.rerun()
     st.divider()
@@ -205,7 +240,7 @@ with st.sidebar:
         v_neg = st.text_area("负向提示词", "low quality, blurry", height=60)
         v_prompt = st.text_area("提示词", height=100, placeholder="描述视频内容...")
         
-        if st.button("🚀 提交任务", type="primary", disabled=(running_count >= 10)):
+        if st.button("🚀 提交任务", type="primary", disabled=(running_count >= 10), use_container_width=True):
             if v_prompt:
                 suc, tid, msg = submit_video_task(v_prompt, v_neg, v_ratio, v_dur)
                 if suc:
@@ -221,13 +256,13 @@ with st.sidebar:
                 else:
                     st.error(msg)
         
-        if st.button("🗑️ 清空所有记录"):
+        if st.button("🗑️ 清空所有记录", use_container_width=True):
             st.session_state['video_tasks'] = []
             st.rerun()
 
     else:
         st.subheader("对话列表")
-        if st.button("➕ 新建对话"):
+        if st.button("➕ 新建对话", use_container_width=True):
             new_id = str(uuid.uuid4())
             st.session_state['chat_sessions'][new_id] = {
                 "title": f"对话 {datetime.now().strftime('%H:%M')}", "messages": []
@@ -245,7 +280,7 @@ with st.sidebar:
                     st.session_state['current_session_id'] = sess_id
                     st.rerun()
             with col_s2:
-                if st.button("❌", key=f"del_{sess_id}"):
+                if st.button("❌", key=f"del_{sess_id}", use_container_width=True):
                     if len(st.session_state['chat_sessions']) > 1:
                         del st.session_state['chat_sessions'][sess_id]
                         if sess_id == current_sess_id:
@@ -303,6 +338,7 @@ if app_mode == "🎬 视频生成":
         
         with st.container():
             st.markdown(f"""<div class="video-card">""", unsafe_allow_html=True)
+            # 手机端自动堆叠：columns 在小屏幕上会失效，变成垂直排列
             c1, c2 = st.columns([4, 1]) 
             with c1:
                 badge_color = "orange" if status_label == 'queued' else "green" if status_label == 'succeeded' else "gray"
@@ -343,13 +379,13 @@ if app_mode == "🎬 视频生成":
     if total_pages > 1:
         c_p1, c_p2, c_p3 = st.columns([1, 3, 1])
         with c_p1:
-            if st.button("◀ 上一页", disabled=(current_page == 1)):
+            if st.button("◀ 上一页", disabled=(current_page == 1), use_container_width=True):
                 st.session_state['video_page'] -= 1
                 st.rerun()
         with c_p2:
             st.markdown(f"<div style='text-align:center; padding-top:5px;'>第 {current_page} / {total_pages} 页</div>", unsafe_allow_html=True)
         with c_p3:
-            if st.button("下一页 ▶", disabled=(current_page == total_pages)):
+            if st.button("下一页 ▶", disabled=(current_page == total_pages), use_container_width=True):
                 st.session_state['video_page'] += 1
                 st.rerun()
 
@@ -482,7 +518,7 @@ elif app_mode == "💬 智能对话":
                     if st.checkbox(f"镜头 {i+1}: {display_p[:60]}...", value=True, key=f"chk_{i}"):
                         selected_indices.append(i)
                 
-                if st.button("🚀 立即生成选中视频", type="primary"):
+                if st.button("🚀 立即生成选中视频", type="primary", use_container_width=True):
                     progress_bar = st.progress(0, text="正在提交任务...")
                     success_count = 0
                     total_selected = len(selected_indices)
@@ -514,6 +550,6 @@ elif app_mode == "💬 智能对话":
                     time.sleep(1)
                     st.rerun()
                 
-                if st.button("取消"):
+                if st.button("取消", use_container_width=True):
                     st.session_state['pending_prompts'] = []
                     st.rerun()
