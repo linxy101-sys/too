@@ -12,7 +12,7 @@ st.set_page_config(page_title="AI 全能助手 (云端同步版)", layout="wide"
 
 # 🔴🔴🔴 【重要】请在这里填入你在 JsonBlob 获取的 ID 🔴🔴🔴
 # 格式示例：JSONBLOB_ID = "1340987654321-987654321"
-JSONBLOB_ID = "请在这里填入你的JsonBlob_ID" 
+JSONBLOB_ID = "019b8e81-d5d4-7220-81e8-7ea251e98c38" 
 
 # 模拟用户数据库 (账号: admin, 密码: 123456)
 USERS = {
