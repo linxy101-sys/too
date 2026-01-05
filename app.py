@@ -26,13 +26,20 @@ except FileNotFoundError:
     API_KEY = "sk-hr1jWTbl00qsSrKY6mGf6H8GTTV5Zh0jkzjYb2z7igv9CRcg"
 
 BASE_URL = "https://xinyuanai666.com"
+
+# 视频配置
 VIDEO_CREATE_URL = f"{BASE_URL}/v1/video/create"
 VIDEO_QUERY_URL = f"{BASE_URL}/v1/video/query" 
 VIDEO_MODEL = "veo3.1-components"
+
+# 对话配置
 CHAT_URL = f"{BASE_URL}/v1/chat/completions"
 CHAT_MODEL = "gemini-3-flash-preview" 
 
-# 🔴 替换为云端存储 ID
+# ✅ 新增：图片生成配置
+IMAGE_MODEL = "gemini-3-pro-image-preview"
+
+# 云端存储 ID
 JSONBLOB_ID = "019b8e81-d5d4-7220-81e8-7ea251e98c38"
 
 # ==========================================
@@ -48,7 +55,6 @@ def load_all_data():
         "User-Agent": "StreamlitApp/1.0"
     }
     try:
-        # 设置超时防止卡死
         response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             return response.json()
@@ -63,13 +69,14 @@ def save_current_user_data():
     if not st.session_state.get('logged_in') or not st.session_state.get('username'):
         return
 
-    # 1. 读取云端最新全量数据 (防止覆盖其他人的数据)
+    # 1. 读取云端最新全量数据
     all_data = load_all_data()
     
-    # 2. 更新当前用户的数据
+    # 2. 更新当前用户的数据 (新增 image_tasks)
     username = st.session_state['username']
     all_data[username] = {
         "video_tasks": st.session_state.get('video_tasks', []),
+        "image_tasks": st.session_state.get('image_tasks', []), # ✅ 新增图片任务保存
         "chat_sessions": st.session_state.get('chat_sessions', {}),
         "current_session_id": st.session_state.get('current_session_id', "")
     }
@@ -88,27 +95,26 @@ def init_user_data(username):
     all_data = load_all_data()
     user_data = all_data.get(username, {})
     
-    # 加载视频任务
+    # 加载任务
     st.session_state['video_tasks'] = user_data.get('video_tasks', [])
+    st.session_state['image_tasks'] = user_data.get('image_tasks', []) # ✅ 加载图片任务
     
     # 加载对话记录
     saved_sessions = user_data.get('chat_sessions', {})
     if saved_sessions:
         st.session_state['chat_sessions'] = saved_sessions
-        # 确保 current_session_id 存在
         last_id = user_data.get('current_session_id')
         if last_id in saved_sessions:
             st.session_state['current_session_id'] = last_id
         else:
             st.session_state['current_session_id'] = list(saved_sessions.keys())[0]
     else:
-        # 新用户初始化
         default_id = str(uuid.uuid4())
         st.session_state['chat_sessions'] = {default_id: {"title": "默认对话", "messages": []}}
         st.session_state['current_session_id'] = default_id
 
 # ==========================================
-# 🛠️ 核心功能函数 (保持原样)
+# 🛠️ 核心功能函数
 # ==========================================
 def check_login(username, password):
     return USERS.get(username) == password
@@ -117,6 +123,7 @@ def log_action(action, details):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] User: {st.session_state.get('username', 'Unknown')} | Action: {action} | {details}")
 
+# --- 视频相关 ---
 def submit_video_task(prompt, negative_prompt, aspect_ratio, duration):
     log_action("SUBMIT_VIDEO", f"Prompt: {prompt[:20]}...")
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
@@ -152,6 +159,34 @@ def check_video_status(task_id):
     except Exception:
         return "unknown", None
 
+# --- ✅ 新增：图片生成函数 ---
+def generate_image_via_chat(prompt):
+    """使用 Chat Completions 接口生成图片"""
+    log_action("GENERATE_IMAGE", f"Prompt: {prompt[:20]}...")
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    
+    # 构造 Chat 格式的请求
+    payload = {
+        "model": IMAGE_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False
+    }
+    
+    try:
+        # 复用 CHAT_URL (/v1/chat/completions)
+        r = requests.post(CHAT_URL, headers=headers, json=payload, timeout=60)
+        if r.status_code == 200:
+            data = r.json()
+            # 通常图片模型通过 Chat 接口返回时，图片链接会在 content 中以 Markdown 格式呈现
+            # 例如: "Here is your image: ![image](https://...)"
+            content = data['choices'][0]['message']['content']
+            return True, content
+        else:
+            return False, f"Error {r.status_code}: {r.text}"
+    except Exception as e:
+        return False, f"Request failed: {str(e)}"
+
+# --- 对话相关 ---
 def chat_with_gemini(messages):
     log_action("CHAT", "Sending message to Gemini")
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
@@ -203,7 +238,7 @@ def extract_copy_blocks(text):
     return blocks
 
 # ==========================================
-# 🖥️ 页面主逻辑 (保持原样)
+# 🖥️ 页面主逻辑
 # ==========================================
 st.set_page_config(page_title="AI 工作台", layout="wide", page_icon="✨", initial_sidebar_state="auto")
 
@@ -260,6 +295,7 @@ if not st.session_state['logged_in']:
 
 # --- 初始化 Session State (防止报错) ---
 if 'video_tasks' not in st.session_state: st.session_state['video_tasks'] = []
+if 'image_tasks' not in st.session_state: st.session_state['image_tasks'] = [] # ✅ 初始化图片任务
 if 'chat_sessions' not in st.session_state:
     default_id = str(uuid.uuid4())
     st.session_state['chat_sessions'] = {default_id: {"title": "默认对话", "messages": []}}
@@ -289,11 +325,12 @@ with st.sidebar:
         st.rerun()
     st.divider()
     
-    app_mode = st.radio("功能切换", ["🎬 视频生成", "💬 智能对话"], index=0)
+    # ✅ 修改：增加图片生成选项
+    app_mode = st.radio("功能切换", ["🎬 视频生成", "🎨 图片生成", "💬 智能对话"], index=0)
     st.divider()
     
     if app_mode == "🎬 视频生成":
-        st.subheader("新建任务")
+        st.subheader("新建视频任务")
         running_count = len([t for t in st.session_state['video_tasks'] if t['status'] not in ['succeeded', 'failed']])
         st.progress(running_count / 10, text=f"队列: {running_count}/10")
         
@@ -302,7 +339,7 @@ with st.sidebar:
         v_neg = st.text_area("负向提示词", "low quality, blurry", height=60)
         v_prompt = st.text_area("提示词", height=100, placeholder="描述视频内容...")
         
-        if st.button("🚀 提交任务", type="primary", disabled=(running_count >= 10), use_container_width=True):
+        if st.button("🚀 提交视频", type="primary", disabled=(running_count >= 10), use_container_width=True):
             if v_prompt:
                 suc, tid, msg = submit_video_task(v_prompt, v_neg, v_ratio, v_dur)
                 if suc:
@@ -314,14 +351,40 @@ with st.sidebar:
                         "params": {"neg": v_neg, "ratio": v_ratio, "dur": v_dur}
                     })
                     st.session_state['video_page'] = 1
-                    save_current_user_data() # 🎯 提交任务后保存
+                    save_current_user_data()
                     st.rerun()
                 else:
                     st.error(msg)
         
-        if st.button("🗑️ 清空所有记录", use_container_width=True):
+        if st.button("🗑️ 清空视频记录", use_container_width=True):
             st.session_state['video_tasks'] = []
-            save_current_user_data() # 🎯 清空后保存
+            save_current_user_data()
+            st.rerun()
+
+    elif app_mode == "🎨 图片生成":
+        st.subheader("新建绘图任务")
+        img_prompt = st.text_area("画面描述", height=120, placeholder="一只赛博朋克风格的猫，霓虹灯背景...")
+        
+        if st.button("🎨 开始绘图", type="primary", use_container_width=True):
+            if img_prompt:
+                with st.spinner("AI 正在绘图，请稍候..."):
+                    success, result = generate_image_via_chat(img_prompt)
+                    if success:
+                        # 保存结果
+                        st.session_state['image_tasks'].insert(0, {
+                            "prompt": img_prompt,
+                            "result": result, # Markdown 内容
+                            "time": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        })
+                        save_current_user_data()
+                        st.success("绘图完成！")
+                        st.rerun()
+                    else:
+                        st.error(f"绘图失败: {result}")
+        
+        if st.button("🗑️ 清空图片记录", use_container_width=True):
+            st.session_state['image_tasks'] = []
+            save_current_user_data()
             st.rerun()
 
     else:
@@ -332,7 +395,7 @@ with st.sidebar:
                 "title": f"对话 {datetime.now().strftime('%H:%M')}", "messages": []
             }
             st.session_state['current_session_id'] = new_id
-            save_current_user_data() # 🎯 新建对话后保存
+            save_current_user_data()
             st.rerun()
             
         session_ids = list(st.session_state['chat_sessions'].keys())
@@ -350,12 +413,12 @@ with st.sidebar:
                         del st.session_state['chat_sessions'][sess_id]
                         if sess_id == current_sess_id:
                             st.session_state['current_session_id'] = list(st.session_state['chat_sessions'].keys())[0]
-                        save_current_user_data() # 🎯 删除对话后保存
+                        save_current_user_data()
                         st.rerun()
 
 # --- 主界面逻辑 ---
 if app_mode == "🎬 视频生成":
-    st.subheader("任务列表")
+    st.subheader("视频任务列表")
     
     if not st.session_state['video_tasks']:
         st.info("👈 请在左侧提交新任务")
@@ -396,7 +459,7 @@ if app_mode == "🎬 视频生成":
                     st.session_state['video_tasks'][real_idx]['status'] = 'succeeded'
                     changed = True
                 if changed: 
-                    save_current_user_data() # 🎯 状态更新后保存
+                    save_current_user_data()
                     st.rerun()
 
     for i, task in enumerate(page_tasks):
@@ -428,7 +491,7 @@ if app_mode == "🎬 视频生成":
                             "params": {"neg": r_neg, "ratio": r_ratio, "dur": r_dur}
                         })
                         st.session_state['video_page'] = 1
-                        save_current_user_data() # 🎯 重试提交后保存
+                        save_current_user_data()
                         st.rerun()
                     else:
                         st.error(f"重试失败: {msg}")
@@ -461,6 +524,23 @@ if app_mode == "🎬 视频生成":
         time.sleep(3)
         st.rerun()
 
+# --- ✅ 新增：图片生成主界面 ---
+elif app_mode == "🎨 图片生成":
+    st.subheader("图片生成历史")
+    
+    if not st.session_state['image_tasks']:
+        st.info("👈 请在左侧输入描述并点击“开始绘图”")
+    
+    for idx, task in enumerate(st.session_state['image_tasks']):
+        with st.container():
+            st.markdown(f"""<div class="video-card">""", unsafe_allow_html=True)
+            st.markdown(f"**时间**: {task['time']}")
+            st.markdown(f"**提示词**: {task['prompt']}")
+            st.divider()
+            # 直接渲染 Markdown 内容 (API 返回的图片链接通常是 Markdown 格式)
+            st.markdown(task['result'])
+            st.markdown("</div>", unsafe_allow_html=True)
+
 elif app_mode == "💬 智能对话":
     c_t1, c_t2 = st.columns([5, 1])
     with c_t1:
@@ -468,7 +548,7 @@ elif app_mode == "💬 智能对话":
     with c_t2:
         if new_title != current_session['title']:
             st.session_state['chat_sessions'][current_sess_id]['title'] = new_title
-            save_current_user_data() # 🎯 修改标题后保存
+            save_current_user_data()
             st.rerun()
 
     with st.container():
@@ -493,7 +573,7 @@ elif app_mode == "💬 智能对话":
                 api_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
         
         st.session_state['chat_sessions'][current_sess_id]['messages'].append(user_msg)
-        save_current_user_data() # 🎯 用户发送后保存
+        save_current_user_data()
         
         api_msgs = []
         for m in current_session['messages']:
@@ -524,7 +604,7 @@ elif app_mode == "💬 智能对话":
                     except: pass
         
         st.session_state['chat_sessions'][current_sess_id]['messages'][-1]['content'] = full_resp
-        save_current_user_data() # 🎯 AI 回复后保存
+        save_current_user_data()
         st.rerun()
 
     st.divider()
@@ -617,7 +697,7 @@ elif app_mode == "💬 智能对话":
                     
                     st.session_state['pending_prompts'] = []
                     st.session_state['video_page'] = 1
-                    save_current_user_data() # 🎯 批量提交后保存
+                    save_current_user_data()
                     st.success(f"成功提交 {success_count} 个任务！")
                     time.sleep(1)
                     st.rerun()
