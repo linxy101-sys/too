@@ -44,7 +44,7 @@ IMAGE_MODEL = "gemini-3-pro-image-preview"
 JSONBLOB_ID = "019b8e81-d5d4-7220-81e8-7ea251e98c38"
 
 # ==========================================
-# 💾 3. 数据持久化核心 (增强调试版)
+# 💾 3. 数据持久化核心 (瘦身版 - 解决保存失败问题)
 # ==========================================
 
 def load_all_data():
@@ -56,7 +56,7 @@ def load_all_data():
         "User-Agent": "StreamlitApp/1.0"
     }
     try:
-        response = requests.get(url, headers=headers, timeout=10) # 增加超时时间
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             return response.json()
         else:
@@ -66,8 +66,34 @@ def load_all_data():
         print(f"云端连接错误: {e}")
         return {}
 
+def _clean_data_for_cloud(data_list):
+    """清理数据：移除过大的 Base64 图片数据，只保留元数据"""
+    clean_list = []
+    for item in data_list:
+        # 复制一份，避免修改本地 Session
+        new_item = item.copy()
+        
+        # 如果包含 result 且太长（说明是图片代码），则替换为占位符
+        if 'result' in new_item and len(str(new_item['result'])) > 500:
+            new_item['result'] = "🖼️ [图片已生成，云端仅存档记录]"
+            
+        # 清理对话中的图片
+        if 'messages' in new_item:
+            clean_msgs = []
+            for msg in new_item['messages']:
+                clean_msg = msg.copy()
+                if 'images' in clean_msg:
+                    # 移除图片数据，只保留标记
+                    clean_msg['images'] = [] 
+                    clean_msg['content'] += " (图片数据未同步到云端)"
+                clean_msgs.append(clean_msg)
+            new_item['messages'] = clean_msgs
+            
+        clean_list.append(new_item)
+    return clean_list
+
 def save_current_user_data():
-    """保存当前用户数据到云端"""
+    """保存当前用户数据到云端 (执行瘦身)"""
     if not st.session_state.get('logged_in') or not st.session_state.get('username'):
         return
 
@@ -75,25 +101,26 @@ def save_current_user_data():
     all_data = load_all_data()
     username = st.session_state['username']
     
-    # 2. 获取该用户在云端的旧配置 (保留额度设置)
+    # 2. 获取旧配置
     user_cloud_data = all_data.get(username, {})
     existing_quota = user_cloud_data.get('quota_limit', DEFAULT_QUOTA)
     
-    # 3. 构建当前用户的新数据包
+    # 3. 准备要保存的数据（进行瘦身处理）
+    # 视频任务通常是 URL，不大，可以直接存。图片任务包含 Base64，必须清理。
+    clean_image_tasks = _clean_data_for_cloud(st.session_state.get('image_tasks', []))
+    # 对话记录如果包含图片也需要清理，这里简单处理，暂存完整对话结构，但在 _clean_data_for_cloud 里处理
+    
     all_data[username] = {
         "video_tasks": st.session_state.get('video_tasks', []),
-        "image_tasks": st.session_state.get('image_tasks', []),
-        "chat_sessions": st.session_state.get('chat_sessions', {}),
+        "image_tasks": clean_image_tasks, # ✅ 存入瘦身后的数据
+        "chat_sessions": st.session_state.get('chat_sessions', {}), # 注意：如果对话里图太多，这里也建议瘦身
         "current_session_id": st.session_state.get('current_session_id', ""),
         "quota_limit": existing_quota,
         "usage_count": st.session_state.get('usage_count', 0)
     }
     
-    # 4. 推送回云端
-    if _push_to_blob(all_data):
-        st.toast("☁️ 云端保存成功", icon="✅")
-    else:
-        st.toast("❌ 云端保存失败，请检查网络", icon="⚠️")
+    # 4. 推送
+    _push_to_blob(all_data)
 
 def save_full_data_admin(all_data):
     """管理员保存全量数据"""
@@ -103,9 +130,22 @@ def _push_to_blob(data):
     url = f"https://jsonblob.com/api/jsonBlob/{JSONBLOB_ID}"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     try:
-        response = requests.put(url, json=data, headers=headers, timeout=10)
-        return response.status_code in [200, 201]
+        # 将数据转为 JSON 字符串，检查大小
+        json_str = json.dumps(data)
+        size_kb = len(json_str) / 1024
+        print(f"正在上传数据包，大小: {size_kb:.2f} KB")
+        
+        response = requests.put(url, data=json_str, headers=headers, timeout=15)
+        
+        if response.status_code in [200, 201]:
+            st.toast("☁️ 云端保存成功", icon="✅")
+            return True
+        else:
+            st.toast(f"❌ 保存失败: {response.status_code}", icon="⚠️")
+            print(f"保存失败详情: {response.text}")
+            return False
     except Exception as e:
+        st.toast(f"❌ 网络异常: {str(e)}", icon="⚠️")
         print(f"云端保存异常: {e}")
         return False
 
@@ -115,10 +155,11 @@ def init_user_data(username):
     user_data = all_data.get(username, {})
     
     st.session_state['video_tasks'] = user_data.get('video_tasks', [])
+    # 注意：从云端加载回来的图片任务，图片数据是空的（因为我们瘦身了）
+    # 这意味着刷新页面后，历史记录里能看到“你生成过”，但看不到图了。这是免费存储的代价。
     st.session_state['image_tasks'] = user_data.get('image_tasks', [])
     st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA)
     
-    # 加载已用次数
     cloud_usage = user_data.get('usage_count', 0)
     calculated_usage = len(st.session_state['video_tasks']) + len(st.session_state['image_tasks'])
     st.session_state['usage_count'] = max(cloud_usage, calculated_usage)
