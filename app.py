@@ -44,7 +44,7 @@ IMAGE_MODEL = "gemini-3-pro-image-preview"
 JSONBLOB_ID = "019b8e81-d5d4-7220-81e8-7ea251e98c38"
 
 # ==========================================
-# 💾 3. 数据持久化核心 (修复版)
+# 💾 3. 数据持久化核心 (增强调试版)
 # ==========================================
 
 def load_all_data():
@@ -56,13 +56,14 @@ def load_all_data():
         "User-Agent": "StreamlitApp/1.0"
     }
     try:
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, timeout=10) # 增加超时时间
         if response.status_code == 200:
             return response.json()
         else:
+            print(f"云端加载失败: Status {response.status_code}")
             return {}
     except Exception as e:
-        print(f"云端加载失败: {e}")
+        print(f"云端连接错误: {e}")
         return {}
 
 def save_current_user_data():
@@ -79,30 +80,34 @@ def save_current_user_data():
     existing_quota = user_cloud_data.get('quota_limit', DEFAULT_QUOTA)
     
     # 3. 构建当前用户的新数据包
-    # 注意：usage_count 是本地 session 累加后的结果
     all_data[username] = {
         "video_tasks": st.session_state.get('video_tasks', []),
         "image_tasks": st.session_state.get('image_tasks', []),
         "chat_sessions": st.session_state.get('chat_sessions', {}),
         "current_session_id": st.session_state.get('current_session_id', ""),
         "quota_limit": existing_quota,
-        "usage_count": st.session_state.get('usage_count', 0) # ✅ 关键：保存已用次数
+        "usage_count": st.session_state.get('usage_count', 0)
     }
     
     # 4. 推送回云端
-    _push_to_blob(all_data)
+    if _push_to_blob(all_data):
+        st.toast("☁️ 云端保存成功", icon="✅")
+    else:
+        st.toast("❌ 云端保存失败，请检查网络", icon="⚠️")
 
 def save_full_data_admin(all_data):
     """管理员保存全量数据"""
-    _push_to_blob(all_data)
+    return _push_to_blob(all_data)
 
 def _push_to_blob(data):
     url = f"https://jsonblob.com/api/jsonBlob/{JSONBLOB_ID}"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     try:
-        requests.put(url, json=data, headers=headers, timeout=5)
+        response = requests.put(url, json=data, headers=headers, timeout=10)
+        return response.status_code in [200, 201]
     except Exception as e:
-        print(f"云端保存失败: {e}")
+        print(f"云端保存异常: {e}")
+        return False
 
 def init_user_data(username):
     """初始化用户数据"""
@@ -113,9 +118,8 @@ def init_user_data(username):
     st.session_state['image_tasks'] = user_data.get('image_tasks', [])
     st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA)
     
-    # ✅ 关键修复：加载已用次数，如果云端没有，则根据现有任务倒推，或者置0
+    # 加载已用次数
     cloud_usage = user_data.get('usage_count', 0)
-    # 兜底逻辑：如果 usage_count 是 0 但有任务，取最大值防止计数器丢失
     calculated_usage = len(st.session_state['video_tasks']) + len(st.session_state['image_tasks'])
     st.session_state['usage_count'] = max(cloud_usage, calculated_usage)
     
@@ -157,14 +161,13 @@ def check_auto_login():
     return False
 
 # ==========================================
-# 👮 5. 额度控制逻辑 (修复版)
+# 👮 5. 额度控制逻辑
 # ==========================================
 def increment_usage():
     """增加一次使用计数并保存"""
     if 'usage_count' not in st.session_state:
         st.session_state['usage_count'] = 0
     st.session_state['usage_count'] += 1
-    # 立即保存，防止丢失
     save_current_user_data()
 
 def check_quota_available():
@@ -338,7 +341,7 @@ if 'video_page' not in st.session_state: st.session_state['video_page'] = 1
 if 'pending_prompts' not in st.session_state: st.session_state['pending_prompts'] = []
 if 'user_edited_anchor' not in st.session_state: st.session_state['user_edited_anchor'] = ""
 if 'quota_limit' not in st.session_state: st.session_state['quota_limit'] = DEFAULT_QUOTA
-if 'usage_count' not in st.session_state: st.session_state['usage_count'] = 0 # ✅ 初始化计数器
+if 'usage_count' not in st.session_state: st.session_state['usage_count'] = 0
 
 # 确保 current_session_id 有效
 if st.session_state['current_session_id'] not in st.session_state['chat_sessions']:
@@ -356,7 +359,6 @@ current_session = st.session_state['chat_sessions'][current_sess_id]
 with st.sidebar:
     st.title(f"✨ 欢迎, {st.session_state['username']}")
     
-    # 📊 额度展示 (使用 usage_count)
     used_count = st.session_state['usage_count']
     limit_count = st.session_state['quota_limit']
     st.markdown(f"""
@@ -406,7 +408,7 @@ with st.sidebar:
                         "params": {"neg": v_neg, "ratio": v_ratio, "dur": v_dur}
                     })
                     st.session_state['video_page'] = 1
-                    increment_usage() # ✅ 消耗额度并保存
+                    increment_usage()
                     st.rerun()
                 else:
                     st.error(msg)
@@ -432,7 +434,7 @@ with st.sidebar:
                             "result": result,
                             "time": datetime.now().strftime("%Y-%m-%d %H:%M")
                         })
-                        increment_usage() # ✅ 消耗额度并保存
+                        increment_usage()
                         st.success("绘图完成！")
                         st.rerun()
                     else:
@@ -476,13 +478,13 @@ with st.sidebar:
 if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
     st.header("👑 管理后台")
     
-    # 强制刷新一次数据
+    # 强制刷新
     if st.button("🔄 刷新全站数据"):
         st.rerun()
         
     all_data = load_all_data()
     
-    tab1, tab2, tab3 = st.tabs(["📊 生成记录监控", "💳 额度管理", "🛠️ 调试数据"])
+    tab1, tab2, tab3 = st.tabs(["📊 生成记录监控", "💳 额度管理", "🛠️ 数据库修复"])
     
     with tab1:
         st.subheader("全站生成记录")
@@ -520,7 +522,6 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
             for user in user_list:
                 user_cloud_data = all_data.get(user, {})
                 current_limit = user_cloud_data.get('quota_limit', DEFAULT_QUOTA)
-                # 读取云端记录的 usage_count
                 used = user_cloud_data.get('usage_count', 0)
                 
                 c1, c2, c3 = st.columns([1, 1, 2])
@@ -539,12 +540,38 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
                         all_data[user] = {}
                     all_data[user]['quota_limit'] = limit
                 
-                save_full_data_admin(all_data)
-                st.success("额度已更新！")
-                time.sleep(1)
-                st.rerun()
+                if save_full_data_admin(all_data):
+                    st.success("额度已更新！")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("保存失败")
     
     with tab3:
+        st.subheader("🛠️ 数据库初始化与修复")
+        st.warning("⚠️ 警告：此操作会重置云端数据库结构（不会删除现有数据，但会覆盖格式）。如果后台是空的，请点击此按钮。")
+        
+        if st.button("🚀 初始化/修复数据库", type="primary"):
+            # 初始化所有用户的基本结构
+            init_db = all_data if all_data else {}
+            for u in USERS.keys():
+                if u not in init_db:
+                    init_db[u] = {
+                        "video_tasks": [],
+                        "image_tasks": [],
+                        "chat_sessions": {},
+                        "quota_limit": DEFAULT_QUOTA,
+                        "usage_count": 0
+                    }
+            
+            if save_full_data_admin(init_db):
+                st.success("数据库初始化成功！现在你应该能看到数据了。")
+                time.sleep(2)
+                st.rerun()
+            else:
+                st.error("初始化失败，请检查网络或 JsonBlob ID")
+        
+        st.divider()
         st.subheader("云端原始数据 (调试用)")
         st.json(all_data)
 
@@ -625,7 +652,7 @@ elif app_mode == "🎬 视频生成":
                                 "params": {"neg": r_neg, "ratio": r_ratio, "dur": r_dur}
                             })
                             st.session_state['video_page'] = 1
-                            increment_usage() # ✅ 消耗额度并保存
+                            increment_usage()
                             st.rerun()
                         else:
                             st.error(f"重试失败: {msg}")
