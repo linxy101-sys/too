@@ -6,16 +6,20 @@ import base64
 import uuid
 import os
 import re
+import pandas as pd  # 需要 pandas 处理表格
 from datetime import datetime
 
 # ==========================================
 # 🔐 1. 账号管理配置
 # ==========================================
 USERS = {
-    "admin": "admin888",
+    "admin": "admin888",  # 管理员账号
     "guest": "123456",
     "vip": "vip666"
 }
+
+# 默认额度配置
+DEFAULT_QUOTA = 20
 
 # ==========================================
 # 🔧 2. 系统配置
@@ -26,24 +30,18 @@ except FileNotFoundError:
     API_KEY = "sk-hr1jWTbl00qsSrKY6mGf6H8GTTV5Zh0jkzjYb2z7igv9CRcg"
 
 BASE_URL = "https://xinyuanai666.com"
-
-# 视频配置
 VIDEO_CREATE_URL = f"{BASE_URL}/v1/video/create"
 VIDEO_QUERY_URL = f"{BASE_URL}/v1/video/query" 
 VIDEO_MODEL = "veo3.1-components"
-
-# 对话配置
 CHAT_URL = f"{BASE_URL}/v1/chat/completions"
 CHAT_MODEL = "gemini-3-flash-preview" 
-
-# ✅ 新增：图片生成配置
 IMAGE_MODEL = "gemini-3-pro-image-preview"
 
 # 云端存储 ID
 JSONBLOB_ID = "019b8e81-d5d4-7220-81e8-7ea251e98c38"
 
 # ==========================================
-# 💾 3. 数据持久化核心 (JsonBlob 云端同步版)
+# 💾 3. 数据持久化核心
 # ==========================================
 
 def load_all_data():
@@ -65,53 +63,71 @@ def load_all_data():
         return {}
 
 def save_current_user_data():
-    """将当前用户的 Session State 同步保存到云端"""
+    """普通用户保存：只更新自己的数据"""
     if not st.session_state.get('logged_in') or not st.session_state.get('username'):
         return
 
-    # 1. 读取云端最新全量数据
     all_data = load_all_data()
-    
-    # 2. 更新当前用户的数据 (新增 image_tasks)
     username = st.session_state['username']
+    
+    # 保留原有的额度设置，防止被覆盖
+    existing_quota = all_data.get(username, {}).get('quota_limit', DEFAULT_QUOTA)
+    
     all_data[username] = {
         "video_tasks": st.session_state.get('video_tasks', []),
-        "image_tasks": st.session_state.get('image_tasks', []), # ✅ 新增图片任务保存
+        "image_tasks": st.session_state.get('image_tasks', []),
         "chat_sessions": st.session_state.get('chat_sessions', {}),
-        "current_session_id": st.session_state.get('current_session_id', "")
+        "current_session_id": st.session_state.get('current_session_id', ""),
+        "quota_limit": existing_quota # 👈 关键：保存额度信息
     }
     
-    # 3. 推送回云端
+    _push_to_blob(all_data)
+
+def save_full_data_admin(all_data):
+    """管理员保存：更新全量数据（用于修改额度）"""
+    _push_to_blob(all_data)
+
+def _push_to_blob(data):
     url = f"https://jsonblob.com/api/jsonBlob/{JSONBLOB_ID}"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    
     try:
-        requests.put(url, json=all_data, headers=headers, timeout=5)
+        requests.put(url, json=data, headers=headers, timeout=5)
     except Exception as e:
         print(f"云端保存失败: {e}")
 
 def init_user_data(username):
-    """登录成功后，初始化该用户的数据"""
+    """初始化用户数据"""
     all_data = load_all_data()
     user_data = all_data.get(username, {})
     
-    # 加载任务
     st.session_state['video_tasks'] = user_data.get('video_tasks', [])
-    st.session_state['image_tasks'] = user_data.get('image_tasks', []) # ✅ 加载图片任务
+    st.session_state['image_tasks'] = user_data.get('image_tasks', [])
+    st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA) # 加载额度
     
-    # 加载对话记录
     saved_sessions = user_data.get('chat_sessions', {})
     if saved_sessions:
         st.session_state['chat_sessions'] = saved_sessions
         last_id = user_data.get('current_session_id')
-        if last_id in saved_sessions:
-            st.session_state['current_session_id'] = last_id
-        else:
-            st.session_state['current_session_id'] = list(saved_sessions.keys())[0]
+        st.session_state['current_session_id'] = last_id if last_id in saved_sessions else list(saved_sessions.keys())[0]
     else:
         default_id = str(uuid.uuid4())
         st.session_state['chat_sessions'] = {default_id: {"title": "默认对话", "messages": []}}
         st.session_state['current_session_id'] = default_id
+
+# ==========================================
+# 👮 4. 额度控制逻辑
+# ==========================================
+def get_usage_count():
+    """获取当前用户已使用次数"""
+    v_count = len(st.session_state.get('video_tasks', []))
+    i_count = len(st.session_state.get('image_tasks', []))
+    return v_count + i_count
+
+def check_quota_available():
+    """检查是否有剩余额度"""
+    used = get_usage_count()
+    limit = st.session_state.get('quota_limit', DEFAULT_QUOTA)
+    return used < limit
 
 # ==========================================
 # 🛠️ 核心功能函数
@@ -159,26 +175,19 @@ def check_video_status(task_id):
     except Exception:
         return "unknown", None
 
-# --- ✅ 新增：图片生成函数 ---
+# --- 图片相关 ---
 def generate_image_via_chat(prompt):
-    """使用 Chat Completions 接口生成图片"""
     log_action("GENERATE_IMAGE", f"Prompt: {prompt[:20]}...")
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-    
-    # 构造 Chat 格式的请求
     payload = {
         "model": IMAGE_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False
     }
-    
     try:
-        # 复用 CHAT_URL (/v1/chat/completions)
         r = requests.post(CHAT_URL, headers=headers, json=payload, timeout=60)
         if r.status_code == 200:
             data = r.json()
-            # 通常图片模型通过 Chat 接口返回时，图片链接会在 content 中以 Markdown 格式呈现
-            # 例如: "Here is your image: ![image](https://...)"
             content = data['choices'][0]['message']['content']
             return True, content
         else:
@@ -242,32 +251,13 @@ def extract_copy_blocks(text):
 # ==========================================
 st.set_page_config(page_title="AI 工作台", layout="wide", page_icon="✨", initial_sidebar_state="auto")
 
-# --- 📱 移动端适配 CSS ---
+# --- CSS 样式 ---
 st.markdown("""
 <style>
-    html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    }
-    .video-card { 
-        background-color: #f8f9fa; 
-        border-radius: 12px; 
-        padding: 16px; 
-        margin-bottom: 12px; 
-        border: 1px solid #eee; 
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
-    .stButton button { 
-        border-radius: 8px; 
-        font-weight: 500;
-        transition: all 0.2s;
-    }
-    @media only screen and (max-width: 768px) {
-        [data-testid="stSidebar"] h1 { font-size: 1.2rem !important; }
-        .video-card { padding: 12px; }
-        .stButton button { width: 100%; margin-top: 4px; }
-        .stMarkdown p { font-size: 1rem !important; line-height: 1.5 !important; }
-        .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-    }
+    html, body, [class*="css"] { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .video-card { background-color: #f8f9fa; border-radius: 12px; padding: 16px; margin-bottom: 12px; border: 1px solid #eee; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .stButton button { border-radius: 8px; font-weight: 500; transition: all 0.2s; }
+    .quota-box { padding: 10px; background: #e6f3ff; border-radius: 8px; border: 1px solid #b6d4fe; margin-bottom: 20px; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -283,19 +273,17 @@ if not st.session_state['logged_in']:
         if check_login(username, password):
             st.session_state['logged_in'] = True
             st.session_state['username'] = username
-            # 🎯 核心：登录时加载该用户的数据
             with st.spinner("正在同步云端数据..."):
                 init_user_data(username)
             log_action("LOGIN", "Success")
             st.rerun()
         else:
             st.error("用户名或密码错误")
-            log_action("LOGIN", f"Failed attempt: {username}")
     st.stop()
 
-# --- 初始化 Session State (防止报错) ---
+# --- 初始化 Session State ---
 if 'video_tasks' not in st.session_state: st.session_state['video_tasks'] = []
-if 'image_tasks' not in st.session_state: st.session_state['image_tasks'] = [] # ✅ 初始化图片任务
+if 'image_tasks' not in st.session_state: st.session_state['image_tasks'] = []
 if 'chat_sessions' not in st.session_state:
     default_id = str(uuid.uuid4())
     st.session_state['chat_sessions'] = {default_id: {"title": "默认对话", "messages": []}}
@@ -303,6 +291,7 @@ if 'chat_sessions' not in st.session_state:
 if 'video_page' not in st.session_state: st.session_state['video_page'] = 1
 if 'pending_prompts' not in st.session_state: st.session_state['pending_prompts'] = []
 if 'user_edited_anchor' not in st.session_state: st.session_state['user_edited_anchor'] = ""
+if 'quota_limit' not in st.session_state: st.session_state['quota_limit'] = DEFAULT_QUOTA
 
 # 确保 current_session_id 有效
 if st.session_state['current_session_id'] not in st.session_state['chat_sessions']:
@@ -319,14 +308,31 @@ current_session = st.session_state['chat_sessions'][current_sess_id]
 # --- 侧边栏 ---
 with st.sidebar:
     st.title(f"✨ 欢迎, {st.session_state['username']}")
+    
+    # 📊 额度展示
+    used_count = get_usage_count()
+    limit_count = st.session_state['quota_limit']
+    st.markdown(f"""
+    <div class="quota-box">
+        <b>📊 额度使用</b><br>
+        <span style="font-size: 1.5em; color: {'red' if used_count >= limit_count else 'green'}">
+            {used_count} / {limit_count}
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+    
     if st.button("退出登录", use_container_width=True):
-        save_current_user_data() # 退出前保存
+        save_current_user_data()
         st.session_state['logged_in'] = False
         st.rerun()
     st.divider()
     
-    # ✅ 修改：增加图片生成选项
-    app_mode = st.radio("功能切换", ["🎬 视频生成", "🎨 图片生成", "💬 智能对话"], index=0)
+    # 菜单选项
+    options = ["🎬 视频生成", "🎨 图片生成", "💬 智能对话"]
+    if st.session_state['username'] == "admin":
+        options.append("👑 管理后台") # 👈 仅管理员可见
+        
+    app_mode = st.radio("功能切换", options, index=0)
     st.divider()
     
     if app_mode == "🎬 视频生成":
@@ -340,7 +346,9 @@ with st.sidebar:
         v_prompt = st.text_area("提示词", height=100, placeholder="描述视频内容...")
         
         if st.button("🚀 提交视频", type="primary", disabled=(running_count >= 10), use_container_width=True):
-            if v_prompt:
+            if not check_quota_available():
+                st.error("❌ 额度已用尽，请联系管理员充值！")
+            elif v_prompt:
                 suc, tid, msg = submit_video_task(v_prompt, v_neg, v_ratio, v_dur)
                 if suc:
                     st.toast("任务已提交")
@@ -366,14 +374,15 @@ with st.sidebar:
         img_prompt = st.text_area("画面描述", height=120, placeholder="一只赛博朋克风格的猫，霓虹灯背景...")
         
         if st.button("🎨 开始绘图", type="primary", use_container_width=True):
-            if img_prompt:
+            if not check_quota_available():
+                st.error("❌ 额度已用尽，请联系管理员充值！")
+            elif img_prompt:
                 with st.spinner("AI 正在绘图，请稍候..."):
                     success, result = generate_image_via_chat(img_prompt)
                     if success:
-                        # 保存结果
                         st.session_state['image_tasks'].insert(0, {
                             "prompt": img_prompt,
-                            "result": result, # Markdown 内容
+                            "result": result,
                             "time": datetime.now().strftime("%Y-%m-%d %H:%M")
                         })
                         save_current_user_data()
@@ -387,7 +396,7 @@ with st.sidebar:
             save_current_user_data()
             st.rerun()
 
-    else:
+    elif app_mode == "💬 智能对话":
         st.subheader("对话列表")
         if st.button("➕ 新建对话", use_container_width=True):
             new_id = str(uuid.uuid4())
@@ -417,7 +426,80 @@ with st.sidebar:
                         st.rerun()
 
 # --- 主界面逻辑 ---
-if app_mode == "🎬 视频生成":
+if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
+    st.header("👑 管理后台")
+    
+    # 加载全量数据
+    all_data = load_all_data()
+    
+    tab1, tab2 = st.tabs(["📊 生成记录监控", "💳 额度管理"])
+    
+    with tab1:
+        st.subheader("全站生成记录")
+        records = []
+        for user, data in all_data.items():
+            # 收集视频记录
+            for task in data.get('video_tasks', []):
+                records.append({
+                    "用户": user,
+                    "类型": "视频",
+                    "内容/提示词": task.get('prompt', '')[:50] + "...",
+                    "状态/结果": task.get('status', 'unknown'),
+                    "时间": task.get('created_at', 'N/A')
+                })
+            # 收集图片记录
+            for task in data.get('image_tasks', []):
+                records.append({
+                    "用户": user,
+                    "类型": "图片",
+                    "内容/提示词": task.get('prompt', '')[:50] + "...",
+                    "状态/结果": "Success",
+                    "时间": task.get('time', 'N/A')
+                })
+        
+        if records:
+            df = pd.DataFrame(records)
+            # 简单的按时间排序（假设时间格式大致可比，或者直接展示）
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("暂无生成记录")
+
+    with tab2:
+        st.subheader("用户额度管理")
+        
+        # 准备编辑数据
+        user_list = list(USERS.keys()) # 仅显示配置表中的用户，或者 all_data.keys()
+        
+        # 创建一个表单来批量更新
+        with st.form("quota_form"):
+            updated_quotas = {}
+            for user in user_list:
+                user_cloud_data = all_data.get(user, {})
+                current_limit = user_cloud_data.get('quota_limit', DEFAULT_QUOTA)
+                used = len(user_cloud_data.get('video_tasks', [])) + len(user_cloud_data.get('image_tasks', []))
+                
+                c1, c2, c3 = st.columns([1, 1, 2])
+                with c1:
+                    st.markdown(f"**{user}**")
+                with c2:
+                    st.markdown(f"已用: {used}")
+                with c3:
+                    new_val = st.number_input(f"额度上限 ({user})", min_value=0, value=int(current_limit), key=f"q_{user}")
+                    updated_quotas[user] = new_val
+                st.divider()
+            
+            if st.form_submit_button("💾 保存额度配置"):
+                for user, limit in updated_quotas.items():
+                    if user not in all_data:
+                        all_data[user] = {}
+                    all_data[user]['quota_limit'] = limit
+                
+                save_full_data_admin(all_data)
+                st.success("额度已更新！")
+                time.sleep(1)
+                st.rerun()
+
+elif app_mode == "🎬 视频生成":
     st.subheader("视频任务列表")
     
     if not st.session_state['video_tasks']:
@@ -476,25 +558,28 @@ if app_mode == "🎬 视频生成":
                 st.markdown(f"<small>{task['prompt']}</small>", unsafe_allow_html=True)
                 
                 if st.button("🔄 重试", key=f"retry_{real_idx}"):
-                    params = task.get("params", {})
-                    r_neg = params.get("neg", "low quality, blurry")
-                    r_ratio = params.get("ratio", "9:16")
-                    r_dur = params.get("dur", 8)
-                    
-                    suc, tid, msg = submit_video_task(task['prompt'], r_neg, r_ratio, r_dur)
-                    if suc:
-                        st.toast("重试任务已提交")
-                        st.session_state['video_tasks'].insert(0, {
-                            "id": tid, "prompt": task['prompt'], "status": "queued", 
-                            "video_url": None, "created_at": datetime.now().strftime("%H:%M:%S"),
-                            "last_check": 0,
-                            "params": {"neg": r_neg, "ratio": r_ratio, "dur": r_dur}
-                        })
-                        st.session_state['video_page'] = 1
-                        save_current_user_data()
-                        st.rerun()
+                    if not check_quota_available():
+                        st.error("❌ 额度不足")
                     else:
-                        st.error(f"重试失败: {msg}")
+                        params = task.get("params", {})
+                        r_neg = params.get("neg", "low quality, blurry")
+                        r_ratio = params.get("ratio", "9:16")
+                        r_dur = params.get("dur", 8)
+                        
+                        suc, tid, msg = submit_video_task(task['prompt'], r_neg, r_ratio, r_dur)
+                        if suc:
+                            st.toast("重试任务已提交")
+                            st.session_state['video_tasks'].insert(0, {
+                                "id": tid, "prompt": task['prompt'], "status": "queued", 
+                                "video_url": None, "created_at": datetime.now().strftime("%H:%M:%S"),
+                                "last_check": 0,
+                                "params": {"neg": r_neg, "ratio": r_ratio, "dur": r_dur}
+                            })
+                            st.session_state['video_page'] = 1
+                            save_current_user_data()
+                            st.rerun()
+                        else:
+                            st.error(f"重试失败: {msg}")
 
             with c2:
                 if task.get('video_url'):
@@ -524,7 +609,6 @@ if app_mode == "🎬 视频生成":
         time.sleep(3)
         st.rerun()
 
-# --- ✅ 新增：图片生成主界面 ---
 elif app_mode == "🎨 图片生成":
     st.subheader("图片生成历史")
     
@@ -537,7 +621,6 @@ elif app_mode == "🎨 图片生成":
             st.markdown(f"**时间**: {task['time']}")
             st.markdown(f"**提示词**: {task['prompt']}")
             st.divider()
-            # 直接渲染 Markdown 内容 (API 返回的图片链接通常是 Markdown 格式)
             st.markdown(task['result'])
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -670,37 +753,40 @@ elif app_mode == "💬 智能对话":
                         selected_indices.append(i)
                 
                 if st.button("🚀 立即生成选中视频", type="primary", use_container_width=True):
-                    progress_bar = st.progress(0, text="正在提交任务...")
-                    success_count = 0
-                    total_selected = len(selected_indices)
-                    
-                    for idx, i in enumerate(selected_indices):
-                        final_prompt = st.session_state['pending_prompts'][i]
-                        if current_anchor:
-                            final_prompt = final_prompt.replace('`[Style Anchor]`', current_anchor).replace('[Style Anchor]', current_anchor).replace('【Style Anchor】', current_anchor)
+                    if not check_quota_available():
+                        st.error("❌ 额度不足")
+                    else:
+                        progress_bar = st.progress(0, text="正在提交任务...")
+                        success_count = 0
+                        total_selected = len(selected_indices)
                         
-                        suc, tid, msg = submit_video_task(final_prompt, batch_neg, batch_ratio, batch_dur)
+                        for idx, i in enumerate(selected_indices):
+                            final_prompt = st.session_state['pending_prompts'][i]
+                            if current_anchor:
+                                final_prompt = final_prompt.replace('`[Style Anchor]`', current_anchor).replace('[Style Anchor]', current_anchor).replace('【Style Anchor】', current_anchor)
+                            
+                            suc, tid, msg = submit_video_task(final_prompt, batch_neg, batch_ratio, batch_dur)
+                            
+                            if suc:
+                                st.session_state['video_tasks'].insert(0, {
+                                    "id": tid, "prompt": final_prompt, "status": "queued", 
+                                    "video_url": None, "created_at": datetime.now().strftime("%H:%M:%S"),
+                                    "last_check": 0,
+                                    "params": {"neg": batch_neg, "ratio": batch_ratio, "dur": batch_dur}
+                                })
+                                success_count += 1
+                            else:
+                                st.error(f"镜头 {i+1} 提交失败: {msg}")
+                            
+                            progress_bar.progress((idx + 1) / total_selected, text=f"已提交 {idx + 1}/{total_selected}")
+                            time.sleep(0.5)
                         
-                        if suc:
-                            st.session_state['video_tasks'].insert(0, {
-                                "id": tid, "prompt": final_prompt, "status": "queued", 
-                                "video_url": None, "created_at": datetime.now().strftime("%H:%M:%S"),
-                                "last_check": 0,
-                                "params": {"neg": batch_neg, "ratio": batch_ratio, "dur": batch_dur}
-                            })
-                            success_count += 1
-                        else:
-                            st.error(f"镜头 {i+1} 提交失败: {msg}")
-                        
-                        progress_bar.progress((idx + 1) / total_selected, text=f"已提交 {idx + 1}/{total_selected}")
-                        time.sleep(0.5)
-                    
-                    st.session_state['pending_prompts'] = []
-                    st.session_state['video_page'] = 1
-                    save_current_user_data()
-                    st.success(f"成功提交 {success_count} 个任务！")
-                    time.sleep(1)
-                    st.rerun()
+                        st.session_state['pending_prompts'] = []
+                        st.session_state['video_page'] = 1
+                        save_current_user_data()
+                        st.success(f"成功提交 {success_count} 个任务！")
+                        time.sleep(1)
+                        st.rerun()
                 
                 if st.button("取消", use_container_width=True):
                     st.session_state['pending_prompts'] = []
