@@ -41,7 +41,7 @@ CHAT_MODEL = "gemini-3-flash-preview"
 IMAGE_MODEL = "gemini-3-pro-image-preview"
 
 # 云端存储 ID
-JSONBLOB_ID = "019b8e81-d5d4-7220-81e8-7ea251e98c38"
+JSONBLOB_ID = "019bb2d0-5a28-7eff-b55d-3a73d7d617e2"
 
 # ==========================================
 # 💾 3. 数据持久化核心 (瘦身版 - 解决保存失败问题)
@@ -127,27 +127,41 @@ def save_full_data_admin(all_data):
     return _push_to_blob(all_data)
 
 def _push_to_blob(data):
+    """推送数据到云端 (带详细错误显示)"""
     url = f"https://jsonblob.com/api/jsonBlob/{JSONBLOB_ID}"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    
     try:
-        # 将数据转为 JSON 字符串，检查大小
+        # 检查 ID 是否填了
+        if "在这里粘贴" in JSONBLOB_ID:
+            st.error("❌ 错误：你还没有填入有效的 JSONBLOB_ID！请看代码第 40 行。")
+            return False
+
         json_str = json.dumps(data)
-        size_kb = len(json_str) / 1024
-        print(f"正在上传数据包，大小: {size_kb:.2f} KB")
         
+        # 发送请求
         response = requests.put(url, data=json_str, headers=headers, timeout=15)
         
         if response.status_code in [200, 201]:
             st.toast("☁️ 云端保存成功", icon="✅")
             return True
         else:
-            st.toast(f"❌ 保存失败: {response.status_code}", icon="⚠️")
-            print(f"保存失败详情: {response.text}")
+            # 🔴 关键：把具体的错误码显示出来
+            error_msg = f"❌ 保存失败 (代码 {response.status_code})"
+            if response.status_code == 404:
+                error_msg += "：ID 不存在！请去 jsonblob.com 新建一个并替换代码中的 ID。"
+            elif response.status_code == 413:
+                error_msg += "：数据太大了！"
+            
+            st.toast(error_msg, icon="🚨")
+            st.error(f"详细错误信息: {response.text}") # 在界面上打印详细错误
             return False
+
     except Exception as e:
-        st.toast(f"❌ 网络异常: {str(e)}", icon="⚠️")
-        print(f"云端保存异常: {e}")
+        st.error(f"❌ 网络连接异常: {str(e)}")
         return False
+
+
 
 def init_user_data(username):
     """初始化用户数据"""
