@@ -38,7 +38,7 @@ VIDEO_QUERY_URL = f"{BASE_URL}/v1/video/query"
 VIDEO_MODEL = "veo3.1-components"
 CHAT_URL = f"{BASE_URL}/v1/chat/completions"
 CHAT_MODEL = "gemini-3-flash-preview" 
-IMAGE_MODEL = "gemini-3-pro-image-preview"
+IMAGE_MODEL = "gemini-2.5-flash-image"
 
 # 云端存储 ID
 JSONBLOB_ID = "019bb2d0-5a28-7eff-b55d-3a73d7d617e2"
