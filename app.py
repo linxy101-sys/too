@@ -44,7 +44,7 @@ IMAGE_MODEL = "gemini-3-pro-image-preview"
 JSONBLOB_ID = "019b8e81-d5d4-7220-81e8-7ea251e98c38"
 
 # ==========================================
-# 💾 3. 数据持久化核心
+# 💾 3. 数据持久化核心 (修复版)
 # ==========================================
 
 def load_all_data():
@@ -66,28 +66,34 @@ def load_all_data():
         return {}
 
 def save_current_user_data():
-    """普通用户保存：只更新自己的数据"""
+    """保存当前用户数据到云端"""
     if not st.session_state.get('logged_in') or not st.session_state.get('username'):
         return
 
+    # 1. 读取云端最新全量数据
     all_data = load_all_data()
     username = st.session_state['username']
     
-    # 保留原有的额度设置，防止被覆盖
-    existing_quota = all_data.get(username, {}).get('quota_limit', DEFAULT_QUOTA)
+    # 2. 获取该用户在云端的旧配置 (保留额度设置)
+    user_cloud_data = all_data.get(username, {})
+    existing_quota = user_cloud_data.get('quota_limit', DEFAULT_QUOTA)
     
+    # 3. 构建当前用户的新数据包
+    # 注意：usage_count 是本地 session 累加后的结果
     all_data[username] = {
         "video_tasks": st.session_state.get('video_tasks', []),
         "image_tasks": st.session_state.get('image_tasks', []),
         "chat_sessions": st.session_state.get('chat_sessions', {}),
         "current_session_id": st.session_state.get('current_session_id', ""),
-        "quota_limit": existing_quota
+        "quota_limit": existing_quota,
+        "usage_count": st.session_state.get('usage_count', 0) # ✅ 关键：保存已用次数
     }
     
+    # 4. 推送回云端
     _push_to_blob(all_data)
 
 def save_full_data_admin(all_data):
-    """管理员保存：更新全量数据（用于修改额度）"""
+    """管理员保存全量数据"""
     _push_to_blob(all_data)
 
 def _push_to_blob(data):
@@ -107,6 +113,12 @@ def init_user_data(username):
     st.session_state['image_tasks'] = user_data.get('image_tasks', [])
     st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA)
     
+    # ✅ 关键修复：加载已用次数，如果云端没有，则根据现有任务倒推，或者置0
+    cloud_usage = user_data.get('usage_count', 0)
+    # 兜底逻辑：如果 usage_count 是 0 但有任务，取最大值防止计数器丢失
+    calculated_usage = len(st.session_state['video_tasks']) + len(st.session_state['image_tasks'])
+    st.session_state['usage_count'] = max(cloud_usage, calculated_usage)
+    
     saved_sessions = user_data.get('chat_sessions', {})
     if saved_sessions:
         st.session_state['chat_sessions'] = saved_sessions
@@ -118,23 +130,18 @@ def init_user_data(username):
         st.session_state['current_session_id'] = default_id
 
 # ==========================================
-# 🔄 4. 自动登录逻辑 (优化刷新问题)
+# 🔄 4. 自动登录逻辑
 # ==========================================
 def set_login_token(username):
-    """设置登录 Token 到 URL"""
-    # 简单 Base64 编码作为 Token
     token = base64.b64encode(username.encode()).decode()
     st.query_params["auth"] = token
 
 def clear_login_token():
-    """清除登录 Token"""
     st.query_params.clear()
 
 def check_auto_login():
-    """检查 URL 是否有有效 Token 实现自动登录"""
     if st.session_state.get('logged_in'):
         return
-
     token = st.query_params.get("auth")
     if token:
         try:
@@ -150,17 +157,19 @@ def check_auto_login():
     return False
 
 # ==========================================
-# 👮 5. 额度控制逻辑
+# 👮 5. 额度控制逻辑 (修复版)
 # ==========================================
-def get_usage_count():
-    """获取当前用户已使用次数"""
-    v_count = len(st.session_state.get('video_tasks', []))
-    i_count = len(st.session_state.get('image_tasks', []))
-    return v_count + i_count
+def increment_usage():
+    """增加一次使用计数并保存"""
+    if 'usage_count' not in st.session_state:
+        st.session_state['usage_count'] = 0
+    st.session_state['usage_count'] += 1
+    # 立即保存，防止丢失
+    save_current_user_data()
 
 def check_quota_available():
     """检查是否有剩余额度"""
-    used = get_usage_count()
+    used = st.session_state.get('usage_count', 0)
     limit = st.session_state.get('quota_limit', DEFAULT_QUOTA)
     return used < limit
 
@@ -286,7 +295,6 @@ def extract_copy_blocks(text):
 # ==========================================
 st.set_page_config(page_title="AI 工作台", layout="wide", page_icon="✨", initial_sidebar_state="auto")
 
-# --- CSS 样式 ---
 st.markdown("""
 <style>
     html, body, [class*="css"] { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -296,7 +304,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 尝试自动登录 ---
 check_auto_login()
 
 # --- 登录界面 ---
@@ -311,10 +318,7 @@ if not st.session_state['logged_in']:
         if check_login(username, password):
             st.session_state['logged_in'] = True
             st.session_state['username'] = username
-            
-            # ✅ 设置 URL Token 实现持久化
             set_login_token(username)
-            
             with st.spinner("正在同步云端数据..."):
                 init_user_data(username)
             log_action("LOGIN", "Success")
@@ -334,6 +338,7 @@ if 'video_page' not in st.session_state: st.session_state['video_page'] = 1
 if 'pending_prompts' not in st.session_state: st.session_state['pending_prompts'] = []
 if 'user_edited_anchor' not in st.session_state: st.session_state['user_edited_anchor'] = ""
 if 'quota_limit' not in st.session_state: st.session_state['quota_limit'] = DEFAULT_QUOTA
+if 'usage_count' not in st.session_state: st.session_state['usage_count'] = 0 # ✅ 初始化计数器
 
 # 确保 current_session_id 有效
 if st.session_state['current_session_id'] not in st.session_state['chat_sessions']:
@@ -351,8 +356,8 @@ current_session = st.session_state['chat_sessions'][current_sess_id]
 with st.sidebar:
     st.title(f"✨ 欢迎, {st.session_state['username']}")
     
-    # 📊 额度展示
-    used_count = get_usage_count()
+    # 📊 额度展示 (使用 usage_count)
+    used_count = st.session_state['usage_count']
     limit_count = st.session_state['quota_limit']
     st.markdown(f"""
     <div class="quota-box">
@@ -365,12 +370,11 @@ with st.sidebar:
     
     if st.button("退出登录", use_container_width=True):
         save_current_user_data()
-        clear_login_token() # ✅ 退出时清除 Token
+        clear_login_token()
         st.session_state['logged_in'] = False
         st.rerun()
     st.divider()
     
-    # 菜单选项
     options = ["🎬 视频生成", "🎨 图片生成", "💬 智能对话"]
     if st.session_state['username'] == "admin":
         options.append("👑 管理后台")
@@ -402,7 +406,7 @@ with st.sidebar:
                         "params": {"neg": v_neg, "ratio": v_ratio, "dur": v_dur}
                     })
                     st.session_state['video_page'] = 1
-                    save_current_user_data()
+                    increment_usage() # ✅ 消耗额度并保存
                     st.rerun()
                 else:
                     st.error(msg)
@@ -428,7 +432,7 @@ with st.sidebar:
                             "result": result,
                             "time": datetime.now().strftime("%Y-%m-%d %H:%M")
                         })
-                        save_current_user_data()
+                        increment_usage() # ✅ 消耗额度并保存
                         st.success("绘图完成！")
                         st.rerun()
                     else:
@@ -472,16 +476,18 @@ with st.sidebar:
 if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
     st.header("👑 管理后台")
     
-    # 加载全量数据
+    # 强制刷新一次数据
+    if st.button("🔄 刷新全站数据"):
+        st.rerun()
+        
     all_data = load_all_data()
     
-    tab1, tab2 = st.tabs(["📊 生成记录监控", "💳 额度管理"])
+    tab1, tab2, tab3 = st.tabs(["📊 生成记录监控", "💳 额度管理", "🛠️ 调试数据"])
     
     with tab1:
         st.subheader("全站生成记录")
         records = []
         for user, data in all_data.items():
-            # 收集视频记录
             for task in data.get('video_tasks', []):
                 records.append({
                     "用户": user,
@@ -490,7 +496,6 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
                     "状态/结果": task.get('status', 'unknown'),
                     "时间": task.get('created_at', 'N/A')
                 })
-            # 收集图片记录
             for task in data.get('image_tasks', []):
                 records.append({
                     "用户": user,
@@ -504,12 +509,10 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
             df = pd.DataFrame(records)
             st.dataframe(df, use_container_width=True)
         else:
-            st.info("暂无生成记录")
+            st.info("暂无生成记录 (请确保用户已生成内容并保存)")
 
     with tab2:
         st.subheader("用户额度管理")
-        
-        # 准备编辑数据
         user_list = list(USERS.keys())
         
         with st.form("quota_form"):
@@ -517,7 +520,8 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
             for user in user_list:
                 user_cloud_data = all_data.get(user, {})
                 current_limit = user_cloud_data.get('quota_limit', DEFAULT_QUOTA)
-                used = len(user_cloud_data.get('video_tasks', [])) + len(user_cloud_data.get('image_tasks', []))
+                # 读取云端记录的 usage_count
+                used = user_cloud_data.get('usage_count', 0)
                 
                 c1, c2, c3 = st.columns([1, 1, 2])
                 with c1:
@@ -539,6 +543,10 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
                 st.success("额度已更新！")
                 time.sleep(1)
                 st.rerun()
+    
+    with tab3:
+        st.subheader("云端原始数据 (调试用)")
+        st.json(all_data)
 
 elif app_mode == "🎬 视频生成":
     st.subheader("视频任务列表")
@@ -617,7 +625,7 @@ elif app_mode == "🎬 视频生成":
                                 "params": {"neg": r_neg, "ratio": r_ratio, "dur": r_dur}
                             })
                             st.session_state['video_page'] = 1
-                            save_current_user_data()
+                            increment_usage() # ✅ 消耗额度并保存
                             st.rerun()
                         else:
                             st.error(f"重试失败: {msg}")
@@ -824,7 +832,7 @@ elif app_mode == "💬 智能对话":
                         
                         st.session_state['pending_prompts'] = []
                         st.session_state['video_page'] = 1
-                        save_current_user_data()
+                        increment_usage() # ✅ 批量生成也消耗额度
                         st.success(f"成功提交 {success_count} 个任务！")
                         time.sleep(1)
                         st.rerun()
