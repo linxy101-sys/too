@@ -6,7 +6,7 @@ import base64
 import uuid
 import os
 import re
-import pandas as pd  # 需要 pandas 处理表格
+import pandas as pd
 from datetime import datetime
 
 # ==========================================
@@ -15,11 +15,14 @@ from datetime import datetime
 USERS = {
     "admin": "admin888",  # 管理员账号
     "guest": "123456",
-    "vip": "vip666"
+    "vip": "vip666",
+    "chunran": "123456",
+    "zhixia": "654321",
+    "yuehuan": "987654"
 }
 
 # 默认额度配置
-DEFAULT_QUOTA = 20
+DEFAULT_QUOTA = 200
 
 # ==========================================
 # 🔧 2. 系统配置
@@ -78,7 +81,7 @@ def save_current_user_data():
         "image_tasks": st.session_state.get('image_tasks', []),
         "chat_sessions": st.session_state.get('chat_sessions', {}),
         "current_session_id": st.session_state.get('current_session_id', ""),
-        "quota_limit": existing_quota # 👈 关键：保存额度信息
+        "quota_limit": existing_quota
     }
     
     _push_to_blob(all_data)
@@ -102,7 +105,7 @@ def init_user_data(username):
     
     st.session_state['video_tasks'] = user_data.get('video_tasks', [])
     st.session_state['image_tasks'] = user_data.get('image_tasks', [])
-    st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA) # 加载额度
+    st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA)
     
     saved_sessions = user_data.get('chat_sessions', {})
     if saved_sessions:
@@ -115,7 +118,39 @@ def init_user_data(username):
         st.session_state['current_session_id'] = default_id
 
 # ==========================================
-# 👮 4. 额度控制逻辑
+# 🔄 4. 自动登录逻辑 (优化刷新问题)
+# ==========================================
+def set_login_token(username):
+    """设置登录 Token 到 URL"""
+    # 简单 Base64 编码作为 Token
+    token = base64.b64encode(username.encode()).decode()
+    st.query_params["auth"] = token
+
+def clear_login_token():
+    """清除登录 Token"""
+    st.query_params.clear()
+
+def check_auto_login():
+    """检查 URL 是否有有效 Token 实现自动登录"""
+    if st.session_state.get('logged_in'):
+        return
+
+    token = st.query_params.get("auth")
+    if token:
+        try:
+            username = base64.b64decode(token).decode()
+            if username in USERS:
+                st.session_state['logged_in'] = True
+                st.session_state['username'] = username
+                with st.spinner("正在恢复会话..."):
+                    init_user_data(username)
+                return True
+        except Exception:
+            pass
+    return False
+
+# ==========================================
+# 👮 5. 额度控制逻辑
 # ==========================================
 def get_usage_count():
     """获取当前用户已使用次数"""
@@ -261,6 +296,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- 尝试自动登录 ---
+check_auto_login()
+
 # --- 登录界面 ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -273,6 +311,10 @@ if not st.session_state['logged_in']:
         if check_login(username, password):
             st.session_state['logged_in'] = True
             st.session_state['username'] = username
+            
+            # ✅ 设置 URL Token 实现持久化
+            set_login_token(username)
+            
             with st.spinner("正在同步云端数据..."):
                 init_user_data(username)
             log_action("LOGIN", "Success")
@@ -323,6 +365,7 @@ with st.sidebar:
     
     if st.button("退出登录", use_container_width=True):
         save_current_user_data()
+        clear_login_token() # ✅ 退出时清除 Token
         st.session_state['logged_in'] = False
         st.rerun()
     st.divider()
@@ -330,7 +373,7 @@ with st.sidebar:
     # 菜单选项
     options = ["🎬 视频生成", "🎨 图片生成", "💬 智能对话"]
     if st.session_state['username'] == "admin":
-        options.append("👑 管理后台") # 👈 仅管理员可见
+        options.append("👑 管理后台")
         
     app_mode = st.radio("功能切换", options, index=0)
     st.divider()
@@ -459,7 +502,6 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
         
         if records:
             df = pd.DataFrame(records)
-            # 简单的按时间排序（假设时间格式大致可比，或者直接展示）
             st.dataframe(df, use_container_width=True)
         else:
             st.info("暂无生成记录")
@@ -468,9 +510,8 @@ if app_mode == "👑 管理后台" and st.session_state['username'] == "admin":
         st.subheader("用户额度管理")
         
         # 准备编辑数据
-        user_list = list(USERS.keys()) # 仅显示配置表中的用户，或者 all_data.keys()
+        user_list = list(USERS.keys())
         
-        # 创建一个表单来批量更新
         with st.form("quota_form"):
             updated_quotas = {}
             for user in user_list:
