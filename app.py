@@ -41,7 +41,7 @@ CHAT_MODEL = "gemini-3-flash-preview"
 IMAGE_MODEL = "gemini-2.5-flash-image"
 
 # 云端存储 ID
-JSONBLOB_ID = "019bb2d0-5a28-7eff-b55d-3a73d7d617e2"
+JSONBLOB_ID = "019be135-bf69-74df-882d-a551bd0156b1"
 
 # ==========================================
 # 💾 3. 数据持久化核心 (瘦身版 - 解决保存失败问题)
