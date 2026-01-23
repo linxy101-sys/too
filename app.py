@@ -50,18 +50,25 @@ import pymongo
 # 🔴🔴🔴 请将下方引号内的内容替换为你第一步复制的 MongoDB 连接链接 🔴🔴🔴
 MONGO_URI = "mongodb+srv://linxy101_db_user:1UwqWtDEEPXHxyuk@cluster0.7e1kner.mongodb.net/?appName=Cluster0"
 
-# 连接数据库
+
+# ==========================================
+# 🔄 优化后的数据库连接函数 (防崩溃版)
+# ==========================================
 @st.cache_resource
 def init_connection():
     try:
-        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        # 检查连接
+        # 尝试连接，设置超时时间为 3 秒，避免卡死
+        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+        # 尝试获取服务器信息来验证连接
         client.server_info()
+        print("✅ 数据库连接成功")
         return client
     except Exception as e:
-        st.error(f"❌ 数据库连接失败，请检查账号密码或 IP 白名单: {e}")
+        # 如果连接失败，打印错误但不要让程序崩溃
+        print(f"⚠️ 数据库连接失败 (进入离线模式): {e}")
+        st.toast("⚠️ 无法连接云端数据库，将使用本地临时存储 (刷新后数据可能丢失)", icon="📡")
         return None
-
+        
 def get_collection():
     client = init_connection()
     if client:
