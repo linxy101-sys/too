@@ -90,6 +90,59 @@ def load_all_data():
         print(f"读取数据库失败: {e}")
         return {}
 
+def init_user_data(username):
+    """精准加载当前用户数据（修复刷新后数据丢失问题）"""
+    collection = get_collection()
+    user_data = {}
+    
+    # 1. 从数据库读取数据
+    if collection:
+        try:
+            doc = collection.find_one({"_id": username})
+            if doc:
+                user_data = {k: v for k, v in doc.items() if k != "_id"}
+        except Exception as e:
+            st.error(f"读取数据出错: {e}")
+
+    # 2. 恢复对话记录 (关键修复：自动补全缺失的字段)
+    saved_sessions = user_data.get('chat_sessions', {})
+    
+    # 数据清洗：确保每条消息都有 images 字段，防止界面报错
+    if saved_sessions:
+        for session_id, session_data in saved_sessions.items():
+            if 'messages' in session_data:
+                for msg in session_data['messages']:
+                    if 'images' not in msg:
+                        msg['images'] = [] # 补全缺失的图片列表
+    
+    # 将清洗后的数据加载到 Session
+    if saved_sessions:
+        st.session_state['chat_sessions'] = saved_sessions
+        # 尝试恢复上次选中的对话 ID
+        last_id = user_data.get('current_session_id')
+        # 如果上次的ID存在且有效，就用它；否则默认选第一个对话
+        if last_id and last_id in saved_sessions:
+            st.session_state['current_session_id'] = last_id
+        else:
+            st.session_state['current_session_id'] = list(saved_sessions.keys())[0]
+    else:
+        # 如果是新用户或没数据，初始化默认对话
+        default_id = str(uuid.uuid4())
+        st.session_state['chat_sessions'] = {default_id: {"title": "默认对话", "messages": []}}
+        st.session_state['current_session_id'] = default_id
+
+    # 3. 恢复视频和图片任务
+    st.session_state['video_tasks'] = user_data.get('video_tasks', [])
+    st.session_state['image_tasks'] = user_data.get('image_tasks', [])
+    
+    # 4. 恢复额度
+    st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA)
+    
+    # 计算已用额度（取云端记录和本地记录的最大值，防止回滚）
+    cloud_usage = user_data.get('usage_count', 0)
+    local_usage = len(st.session_state['video_tasks']) + len(st.session_state['image_tasks'])
+    st.session_state['usage_count'] = max(cloud_usage, local_usage)
+        
 def _clean_data_for_cloud(data_list):
     """清理数据：移除过大的 Base64 图片数据，只保留元数据"""
     clean_list = []
