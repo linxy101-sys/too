@@ -48,7 +48,7 @@ IMAGE_MODEL = "gemini-2.5-flash-image"
 import pymongo
 
 # 🔴🔴🔴 请将下方引号内的内容替换为你第一步复制的 MongoDB 连接链接 🔴🔴🔴
-MONGO_URI = "mongodb+srv://linxy101_db_user:<1UwqWtDEEPXHxyuk>@cluster0.7e1kner.mongodb.net/?appName=Cluster0"
+MONGO_URI = "mongodb+srv://linxy101_db_user:1UwqWtDEEPXHxyuk@cluster0.7e1kner.mongodb.net/?appName=Cluster0"
 
 # 连接数据库
 @st.cache_resource
