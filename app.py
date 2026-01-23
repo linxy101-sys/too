@@ -40,153 +40,135 @@ CHAT_URL = f"{BASE_URL}/v1/chat/completions"
 CHAT_MODEL = "gemini-3-flash-preview" 
 IMAGE_MODEL = "gemini-2.5-flash-image"
 
-# 云端存储 ID
-JSONBLOB_ID = "019be135-bf69-74df-882d-a551bd0156b1"
+
 
 # ==========================================
-# 💾 3. 数据持久化核心 (瘦身版 - 解决保存失败问题)
+# 💾 3. 数据持久化核心 (MongoDB 专业版 - 稳定不丢数据)
 # ==========================================
+import pymongo
+
+# 🔴🔴🔴 请将下方引号内的内容替换为你第一步复制的 MongoDB 连接链接 🔴🔴🔴
+MONGO_URI = "mongodb+srv://linxy101_db_user:<1UwqWtDEEPXHxyuk>@cluster0.7e1kner.mongodb.net/?appName=Cluster0"
+
+# 连接数据库
+@st.cache_resource
+def init_connection():
+    try:
+        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        # 检查连接
+        client.server_info()
+        return client
+    except Exception as e:
+        st.error(f"❌ 数据库连接失败，请检查账号密码或 IP 白名单: {e}")
+        return None
+
+def get_collection():
+    client = init_connection()
+    if client:
+        db = client["ai_workbench_db"]  # 数据库名，自动创建
+        return db["users_data"]         # 表名，自动创建
+    return None
 
 def load_all_data():
-    """从云端加载所有用户的数据"""
-    url = f"https://jsonblob.com/api/jsonBlob/{JSONBLOB_ID}"
-    headers = {
-        "Content-Type": "application/json", 
-        "Accept": "application/json",
-        "User-Agent": "StreamlitApp/1.0"
-    }
+    """从 MongoDB 加载所有用户的数据"""
+    collection = get_collection()
+    if collection is None:
+        return {}
+    
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"云端加载失败: Status {response.status_code}")
-            return {}
+        # 从数据库读取所有文档，并转换为 {username: data} 的格式
+        all_docs = list(collection.find())
+        data_dict = {}
+        for doc in all_docs:
+            # MongoDB 的 _id 就是用户名
+            username = doc["_id"]
+            # 移除 _id 字段，保留其余数据
+            user_data = {k: v for k, v in doc.items() if k != "_id"}
+            data_dict[username] = user_data
+        return data_dict
     except Exception as e:
-        print(f"云端连接错误: {e}")
+        print(f"读取数据库失败: {e}")
         return {}
 
 def _clean_data_for_cloud(data_list):
     """清理数据：移除过大的 Base64 图片数据，只保留元数据"""
     clean_list = []
     for item in data_list:
-        # 复制一份，避免修改本地 Session
         new_item = item.copy()
-        
         # 如果包含 result 且太长（说明是图片代码），则替换为占位符
         if 'result' in new_item and len(str(new_item['result'])) > 500:
             new_item['result'] = "🖼️ [图片已生成，云端仅存档记录]"
-            
+        
         # 清理对话中的图片
         if 'messages' in new_item:
             clean_msgs = []
             for msg in new_item['messages']:
                 clean_msg = msg.copy()
                 if 'images' in clean_msg:
-                    # 移除图片数据，只保留标记
                     clean_msg['images'] = [] 
                     clean_msg['content'] += " (图片数据未同步到云端)"
                 clean_msgs.append(clean_msg)
             new_item['messages'] = clean_msgs
-            
         clean_list.append(new_item)
     return clean_list
 
 def save_current_user_data():
-    """保存当前用户数据到云端 (执行瘦身)"""
+    """保存当前用户数据到 MongoDB (只更新当前用户，速度快且不冲突)"""
     if not st.session_state.get('logged_in') or not st.session_state.get('username'):
         return
 
-    # 1. 读取云端最新全量数据
-    all_data = load_all_data()
+    collection = get_collection()
+    if collection is None:
+        return
+
     username = st.session_state['username']
     
-    # 2. 获取旧配置
-    user_cloud_data = all_data.get(username, {})
-    existing_quota = user_cloud_data.get('quota_limit', DEFAULT_QUOTA)
-    
-    # 3. 准备要保存的数据（进行瘦身处理）
-    # 视频任务通常是 URL，不大，可以直接存。图片任务包含 Base64，必须清理。
+    # 准备要保存的数据
     clean_image_tasks = _clean_data_for_cloud(st.session_state.get('image_tasks', []))
-    # 对话记录如果包含图片也需要清理，这里简单处理，暂存完整对话结构，但在 _clean_data_for_cloud 里处理
     
-    all_data[username] = {
+    user_data = {
         "video_tasks": st.session_state.get('video_tasks', []),
-        "image_tasks": clean_image_tasks, # ✅ 存入瘦身后的数据
-        "chat_sessions": st.session_state.get('chat_sessions', {}), # 注意：如果对话里图太多，这里也建议瘦身
+        "image_tasks": clean_image_tasks,
+        "chat_sessions": st.session_state.get('chat_sessions', {}),
         "current_session_id": st.session_state.get('current_session_id', ""),
-        "quota_limit": existing_quota,
+        "quota_limit": st.session_state.get('quota_limit', DEFAULT_QUOTA),
         "usage_count": st.session_state.get('usage_count', 0)
     }
     
-    # 4. 推送
-    _push_to_blob(all_data)
+    try:
+        # update_one with upsert=True: 如果存在就更新，不存在就创建
+        # 使用 $set 只更新该用户的数据，不会覆盖其他人的数据
+        collection.update_one(
+            {"_id": username}, 
+            {"$set": user_data}, 
+            upsert=True
+        )
+        # 静默保存，不弹窗打扰，除非出错
+    except Exception as e:
+        st.toast(f"❌ 数据保存失败: {e}", icon="🚨")
 
 def save_full_data_admin(all_data):
-    """管理员保存全量数据"""
-    return _push_to_blob(all_data)
-
-def _push_to_blob(data):
-    """推送数据到云端 (带详细错误显示)"""
-    url = f"https://jsonblob.com/api/jsonBlob/{JSONBLOB_ID}"
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    """管理员保存全量数据 (用于后台批量修改额度)"""
+    collection = get_collection()
+    if collection is None:
+        return False
     
     try:
-        # 检查 ID 是否填了
-        if "在这里粘贴" in JSONBLOB_ID:
-            st.error("❌ 错误：你还没有填入有效的 JSONBLOB_ID！请看代码第 40 行。")
-            return False
-
-        json_str = json.dumps(data)
+        # 批量写入操作
+        from pymongo import UpdateOne
+        operations = []
+        for username, user_data in all_data.items():
+            operations.append(
+                UpdateOne({"_id": username}, {"$set": user_data}, upsert=True)
+            )
         
-        # 发送请求
-        response = requests.put(url, data=json_str, headers=headers, timeout=15)
-        
-        if response.status_code in [200, 201]:
-            st.toast("☁️ 云端保存成功", icon="✅")
-            return True
-        else:
-            # 🔴 关键：把具体的错误码显示出来
-            error_msg = f"❌ 保存失败 (代码 {response.status_code})"
-            if response.status_code == 404:
-                error_msg += "：ID 不存在！请去 jsonblob.com 新建一个并替换代码中的 ID。"
-            elif response.status_code == 413:
-                error_msg += "：数据太大了！"
-            
-            st.toast(error_msg, icon="🚨")
-            st.error(f"详细错误信息: {response.text}") # 在界面上打印详细错误
-            return False
-
+        if operations:
+            collection.bulk_write(operations)
+        st.toast("☁️ 管理员数据同步成功", icon="✅")
+        return True
     except Exception as e:
-        st.error(f"❌ 网络连接异常: {str(e)}")
+        st.error(f"❌ 管理员保存失败: {e}")
         return False
-
-
-
-def init_user_data(username):
-    """初始化用户数据"""
-    all_data = load_all_data()
-    user_data = all_data.get(username, {})
-    
-    st.session_state['video_tasks'] = user_data.get('video_tasks', [])
-    # 注意：从云端加载回来的图片任务，图片数据是空的（因为我们瘦身了）
-    # 这意味着刷新页面后，历史记录里能看到“你生成过”，但看不到图了。这是免费存储的代价。
-    st.session_state['image_tasks'] = user_data.get('image_tasks', [])
-    st.session_state['quota_limit'] = user_data.get('quota_limit', DEFAULT_QUOTA)
-    
-    cloud_usage = user_data.get('usage_count', 0)
-    calculated_usage = len(st.session_state['video_tasks']) + len(st.session_state['image_tasks'])
-    st.session_state['usage_count'] = max(cloud_usage, calculated_usage)
-    
-    saved_sessions = user_data.get('chat_sessions', {})
-    if saved_sessions:
-        st.session_state['chat_sessions'] = saved_sessions
-        last_id = user_data.get('current_session_id')
-        st.session_state['current_session_id'] = last_id if last_id in saved_sessions else list(saved_sessions.keys())[0]
-    else:
-        default_id = str(uuid.uuid4())
-        st.session_state['chat_sessions'] = {default_id: {"title": "默认对话", "messages": []}}
-        st.session_state['current_session_id'] = default_id
 
 # ==========================================
 # 🔄 4. 自动登录逻辑
