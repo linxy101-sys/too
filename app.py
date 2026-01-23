@@ -144,26 +144,11 @@ def init_user_data(username):
     st.session_state['usage_count'] = max(cloud_usage, local_usage)
         
 def _clean_data_for_cloud(data_list):
-    """清理数据：移除过大的 Base64 图片数据，只保留元数据"""
-    clean_list = []
-    for item in data_list:
-        new_item = item.copy()
-        # 如果包含 result 且太长（说明是图片代码），则替换为占位符
-        if 'result' in new_item and len(str(new_item['result'])) > 500:
-            new_item['result'] = "🖼️ [图片已生成，云端仅存档记录]"
-        
-        # 清理对话中的图片
-        if 'messages' in new_item:
-            clean_msgs = []
-            for msg in new_item['messages']:
-                clean_msg = msg.copy()
-                if 'images' in clean_msg:
-                    clean_msg['images'] = [] 
-                    clean_msg['content'] += " (图片数据未同步到云端)"
-                clean_msgs.append(clean_msg)
-            new_item['messages'] = clean_msgs
-        clean_list.append(new_item)
-    return clean_list
+    """
+    修改版：不再清理图片数据，完整保存到云端。
+    """
+    # 直接返回数据的副本，不做任何删除操作
+    return [item.copy() for item in data_list]
 
 def save_current_user_data():
     """保存当前用户数据到 MongoDB (只更新当前用户，速度快且不冲突)"""
