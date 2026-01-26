@@ -8,6 +8,7 @@ import os
 import re
 import pandas as pd
 from datetime import datetime
+import pymongo
 
 # ==========================================
 # 🔐 1. 账号管理配置
@@ -40,22 +41,22 @@ CHAT_URL = f"{BASE_URL}/v1/chat/completions"
 CHAT_MODEL = "gemini-3-flash-preview" 
 IMAGE_MODEL = "gemini-2.5-flash-image"
 
-
-
 # ==========================================
-# 💾 3. 数据持久化核心 (MongoDB 专业版 - 稳定不丢数据)
+# 💾 3. 数据持久化核心 (MongoDB 专业版 - 修复版)
 # ==========================================
-import pymongo
 
-# 🔴🔴🔴 请将下方引号内的内容替换为你第一步复制的 MongoDB 连接链接 🔴🔴🔴
+# 🔴🔴🔴 MongoDB 连接链接 🔴🔴🔴
 MONGO_URI = "mongodb+srv://linxy101_db_user:1UwqWtDEEPXHxyuk@cluster0.7e1kner.mongodb.net/?appName=Cluster0"
 
-
 # ==========================================
-# 🔄 优化后的数据库连接函数 (防崩溃版)
+# 🔄 优化后的数据库连接函数 (无 UI 副作用版)
 # ==========================================
 @st.cache_resource
 def init_connection():
+    """
+    建立数据库连接。
+    注意：此函数被缓存，绝对不能包含 st.toast 或 st.error 等 UI 代码！
+    """
     try:
         # 尝试连接，设置超时时间为 3 秒，避免卡死
         client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
@@ -64,9 +65,8 @@ def init_connection():
         print("✅ 数据库连接成功")
         return client
     except Exception as e:
-        # 如果连接失败，打印错误但不要让程序崩溃
+        # 只打印日志到后台控制台，不操作 UI，防止 CacheReplayClosureError
         print(f"⚠️ 数据库连接失败 (进入离线模式): {e}")
-        st.toast("⚠️ 无法连接云端数据库，将使用本地临时存储 (刷新后数据可能丢失)", icon="📡")
         return None
         
 def get_collection():
@@ -109,7 +109,8 @@ def init_user_data(username):
             if doc:
                 user_data = {k: v for k, v in doc.items() if k != "_id"}
         except Exception as e:
-            st.error(f"读取数据出错: {e}")
+            # 这里可以使用 st.error，因为 init_user_data 没有被缓存
+            print(f"读取数据出错: {e}")
 
     # 2. 恢复对话记录 (关键修复：自动补全缺失的字段)
     saved_sessions = user_data.get('chat_sessions', {})
@@ -190,6 +191,7 @@ def save_current_user_data():
         )
         # 静默保存，不弹窗打扰，除非出错
     except Exception as e:
+        # 这里可以使用 st.toast，因为 save_current_user_data 没有被缓存
         st.toast(f"❌ 数据保存失败: {e}", icon="🚨")
 
 def save_full_data_admin(all_data):
